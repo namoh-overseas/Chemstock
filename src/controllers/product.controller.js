@@ -4,82 +4,74 @@ import { Settings } from "../models/settings.model.js";
 import { User } from "../models/user.model.js";
 import mongoose from "mongoose";
 
+// Controller: getProducts
 export const getProducts = async (req, res) => {
   try {
-    let page = parseInt(req.query.page) || 1;
-    let limit = parseInt(req.query.limit) || 25;
+    // --- parse + sanitize params ---
+    let page = parseInt(req.query.page, 10) || 1;
+    let limit = parseInt(req.query.limit, 10) || 25;
     const { search = "", filters = "", sort = "" } = req.query;
 
-    // Ensure pagination boundaries
     page = Math.max(page, 1);
     limit = Math.min(Math.max(limit, 1), 50);
     const skip = (page - 1) * limit;
 
-    // Parse filters
+    // --- helper: parse filters string like "company:Acme,Globex;price:0-100;stock:0-50" ---
     const parseFilters = (filtersString) => {
-      const filters = {};
-      if (!filtersString) return filters;
+      const out = {};
+      if (!filtersString) return out;
 
-      filtersString.split(";").forEach((filter) => {
-        const [key, value] = filter.split(":");
-        if (!key || !value) return;
+      filtersString.split(";").forEach((f) => {
+        const [key, value] = f.split(":");
+        if (!key || value === undefined) return;
 
-        if (value.includes("-") && (key === "price" || key === "stock")) {
-          const [min, max] = value.split("-").map(Number);
-          filters[key] = { min, max };
+        if ((key === "price" || key === "stock") && value.includes("-")) {
+          const [minRaw, maxRaw] = value.split("-");
+          const min = Number(minRaw) || 0;
+          const max = Number(maxRaw) || 0;
+          out[key] = { min, max };
         } else if (value.includes(",")) {
-          filters[key] = value.split(",");
+          out[key] = value.split(",").map((s) => s.trim()).filter(Boolean);
         } else {
-          filters[key] =
-            value === "true" ? true : value === "false" ? false : value;
+          out[key] = value === "true" ? true : value === "false" ? false : value;
         }
       });
 
-      return filters;
+      return out;
     };
 
-    const { company, price, stock } = parseFilters(filters);
+    const parsedFilters = parseFilters(filters);
+    // normalize company filter into array of strings
+    const companyFilters = Array.isArray(parsedFilters.company)
+      ? parsedFilters.company.map((c) => String(c).trim()).filter(Boolean)
+      : parsedFilters.company
+      ? [String(parsedFilters.company).trim()]
+      : [];
 
-    const filterQuery = {
+    // --- STEP 1: SEARCH (DB call) ---
+    // Only use search for DB query. Do NOT apply filters/sorting here.
+    const baseQuery = {
       isVisible: true,
       status: "active",
       isVerified: true,
-      ...(search && {
-        $or: [
-          { name: { $regex: search, $options: "i" } },
-          { ci: { $regex: search, $options: "i" } },
-          { tone: { $regex: search, $options: "i" } },
-          ...(mongoose.Types.ObjectId.isValid(search) ? [{ _id: new mongoose.Types.ObjectId(search) }] : [])
-        ],
-      }),
-      ...(company &&
-        Array.isArray(company) &&
-        company.length && {
-          company: { $in: company.map((c) => new RegExp(c, "i")) },
-        }),
-      ...(price && {
-        price: {
-          $gte: isNaN(price.min) ? 0 : Number(price.min),
-          $lte: isNaN(price.max) ? 999999 : Number(price.max),
-        },
-      }),
-      ...(stock && {
-        stock: {
-          $gte: isNaN(stock.min) ? 0 : Number(stock.min),
-          $lte: isNaN(stock.max) ? 999999 : Number(stock.max),
-        },
-      }),
     };
 
-    // Sorting
-    let sortQuery = {};
-    if (sort && sort !== "relevant") {
-      const [sortBy = "name", sortDir = "asc"] = sort.split("-");
-      sortQuery[sortBy === "isFeatured" ? "isFeatured" : sortBy] =
-        sortDir === "asc" ? 1 : -1;
+    if (search && String(search).trim()) {
+      const s = String(search).trim();
+      const or = [
+        { name: { $regex: s, $options: "i" } },
+        { ci: { $regex: s, $options: "i" } },
+        { tone: { $regex: s, $options: "i" } },
+      ];
+      // include id match if it looks like an ObjectId
+      if (mongoose && mongoose.Types && mongoose.Types.ObjectId.isValid(s)) {
+        or.push({ _id: new mongoose.Types.ObjectId(s) });
+      }
+      baseQuery.$or = or;
     }
 
-    const products = await Product.find(filterQuery, {
+    // projection - keep it minimal
+    const projection = {
       name: 1,
       price: 1,
       currency: 1,
@@ -91,75 +83,141 @@ export const getProducts = async (req, res) => {
       seller: 1,
       isFeatured: 1,
       description: 1,
-    })
-      .skip(skip)
-      .limit(limit)
-      .sort(sortQuery)
-      .lean();
+    };
 
-    // Seller Mapping
-    const sellerIds = [...new Set(products.map((p) => p.seller.toString()))];
+    // fetch search candidates (no filters)
+    const searchCandidates = await Product.find(baseQuery, projection).lean();
+
+    // if no results, respond quickly with empty meta
+    if (!searchCandidates || searchCandidates.length === 0) {
+      const settings = await Settings.findOne({}, { usdToInrRate: 1 }).lean();
+      return res.status(200).json({
+        message: "Products fetched successfully",
+        total: 0,
+        count: 0,
+        page,
+        limit,
+        totalPages: 0,
+        products: [],
+        usdToInrRate: settings?.usdToInrRate ?? null,
+        companies: [],
+        maxPrice: 0,
+        maxStock: 0,
+      });
+    }
+
+    // --- Resolve sellers for the searchCandidates so we can compute companies for filters ---
+    const sellerIds = [...new Set(searchCandidates.map((p) => String(p.seller)))].filter(Boolean);
     const users = await User.find(
       { _id: { $in: sellerIds }, isActive: true },
       { company: 1, username: 1 }
     ).lean();
-    const sellersMap = new Map(
-      users.map((u) => [
-        u._id.toString(),
-        { company: u.company, username: u.username },
-      ])
-    );
+    const sellersMap = new Map(users.map((u) => [String(u._id), { company: u.company, username: u.username }]));
 
-    const productsWithSeller = products
+    // enrich searchCandidates with seller info; drop products without active seller info
+    const searchProductsWithSeller = searchCandidates
       .map((p) => {
-        const sellerData = sellersMap.get(p.seller.toString());
-        if (!sellerData) return null;
+        const sellerInfo = sellersMap.get(String(p.seller));
+        if (!sellerInfo) return null;
         return {
           ...p,
           seller: {
-            username: sellerData.username,
-            company: sellerData.company,
             id: p.seller,
+            company: sellerInfo.company,
+            username: sellerInfo.username,
           },
         };
       })
       .filter(Boolean);
 
+    // --- STEP 2 (important): Compute search-level metadata (based on SEARCH results only) ---
+    // These are what frontend should use to build filter UI (buckets etc.)
     const uniqueCompanies = [
-      ...new Set(productsWithSeller.map((p) => p.seller.company)),
+      ...new Set(searchProductsWithSeller.map((p) => String(p.seller.company || "")).filter(Boolean)),
     ];
-    const maxPrice = productsWithSeller.length
-      ? Math.max(...productsWithSeller.map((p) => p.price))
+    const maxPriceFromSearch = searchProductsWithSeller.length
+      ? Math.max(...searchProductsWithSeller.map((p) => Number(p.price) || 0))
       : 0;
-    const maxStock = productsWithSeller.length
-      ? Math.max(...productsWithSeller.map((p) => p.stock))
+    const maxStockFromSearch = searchProductsWithSeller.length
+      ? Math.max(...searchProductsWithSeller.map((p) => Number(p.stock) || 0))
       : 0;
+
+    // --- STEP 3: APPLY FILTERS (in-memory, using parsedFilters) ---
+    // We filter the searchProductsWithSeller (search results) using company/price/stock filters
+    let filtered = [...searchProductsWithSeller];
+
+    if (companyFilters.length > 0) {
+      const lowerCompanies = companyFilters.map((c) => c.toLowerCase());
+      filtered = filtered.filter((p) => {
+        const sellerCompany = String(p.seller?.company || "").toLowerCase();
+        return lowerCompanies.includes(sellerCompany);
+      });
+    }
+
+    if (parsedFilters.price && typeof parsedFilters.price.min === "number" && typeof parsedFilters.price.max === "number") {
+      filtered = filtered.filter((p) => {
+        const pr = Number(p.price) || 0;
+        return pr >= parsedFilters.price.min && pr <= parsedFilters.price.max;
+      });
+    }
+
+    if (parsedFilters.stock && typeof parsedFilters.stock.min === "number" && typeof parsedFilters.stock.max === "number") {
+      filtered = filtered.filter((p) => {
+        const st = Number(p.stock) || 0;
+        return st >= parsedFilters.stock.min && st <= parsedFilters.stock.max;
+      });
+    }
+
+    // --- STEP 4: SORT (in-memory, after filtering) ---
+    // Keep original DB order when sort === 'relevant'
+    let sorted = filtered;
+    if (sort && sort !== "relevant") {
+      const [sortBy = "name", sortDir = "asc"] = sort.split("-");
+      const dir = sortDir === "asc" ? 1 : -1;
+
+      sorted = filtered.slice().sort((a, b) => {
+        if (sortBy === "price") return dir * ((Number(a.price) || 0) - (Number(b.price) || 0));
+        if (sortBy === "stock") return dir * ((Number(a.stock) || 0) - (Number(b.stock) || 0));
+        if (sortBy === "isFeatured") return dir * ((a.isFeatured ? 1 : 0) - (b.isFeatured ? 1 : 0));
+        // default: name
+        const an = String(a.name || "").toLowerCase();
+        const bn = String(b.name || "").toLowerCase();
+        if (an < bn) return -1 * dir;
+        if (an > bn) return 1 * dir;
+        return 0;
+      });
+    }
+
+    // --- STEP 5: PAGINATE (in-memory) ---
+    const totalAfterFilter = sorted.length;
+    const totalPages = Math.ceil(totalAfterFilter / limit) || 0;
+    const paginated = sorted.slice(skip, skip + limit);
 
     const settings = await Settings.findOne({}, { usdToInrRate: 1 }).lean();
 
-    const totalProducts = await Product.countDocuments(filterQuery);
-    const totalPages = Math.ceil(totalProducts / limit);
-
-    res.status(200).json({
+    // --- RESPONSE ---
+    return res.status(200).json({
       message: "Products fetched successfully",
-      total: totalProducts,
-      count: productsWithSeller.length,
+      // total should reflect number after filtering (useful for pagination UI)
+      total: totalAfterFilter,
+      count: paginated.length,
       page,
       limit,
       totalPages,
-      products: productsWithSeller,
+      products: paginated,
       usdToInrRate: settings?.usdToInrRate ?? null,
+      // IMPORTANT: companies/max values come from SEARCH results (not filtered/paginated)
       companies: uniqueCompanies,
-      maxPrice,
-      maxStock,
+      maxPrice: maxPriceFromSearch,
+      maxStock: maxStockFromSearch,
     });
   } catch (error) {
     console.error("Error in getProducts:", error);
-    res.status(500).json({
-      message: "Something went wrong while fetching products",
-    });
+    return res.status(500).json({ message: "Something went wrong while fetching products" });
   }
 };
+
+
 
 export const getProduct = async (req, res) => {
   try {
