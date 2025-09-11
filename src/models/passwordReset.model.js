@@ -18,7 +18,6 @@ const passwordResetSchema = new Schema({
 const OTPSchema = new Schema({
     email: {
         type: String,
-        unique: true,
         required: true,
         ref: "UserSchema"
     },
