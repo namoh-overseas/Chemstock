@@ -5,7 +5,7 @@ import { uploadFileOnCloudinary } from "../utils/cloudinary.js";
 import mongoose from "mongoose";
 
 export const addRequest = asyncHandler(async (req, res) => {
-    const { contact, name, contactMethod, ci, tone, quantity, stockUnit, note, image } = req.body;
+    const { contact, name, contactMethod,countryCode, ci, tone, quantity, stockUnit, note, image } = req.body;
     const imageFile = req.file;
     if (!name || !contactMethod || !contact || !quantity) {
         return res.status(400).json({ message: "All fields are required" });
@@ -30,6 +30,7 @@ export const addRequest = asyncHandler(async (req, res) => {
         name,
         contactMethod,
         contact,
+        countryCode,
         ci,
         tone,
         quantity,
