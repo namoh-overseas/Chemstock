@@ -23,7 +23,7 @@ export const sendPasswordResetMail = async (email, user, id) => {
         <li>Click on the link below to reset your password: <br /><a href="${process.env.FRONTEND_URL}/reset-password?user=${id}&resetToken=${token}" rel="noopener noreferrer">Reset Password</a></li><br/>
         <li>Follow the prompts to create a new password.</li>
     </ol>
-    <p>Please note that this link will expire in <b>10 mins </b>for your security.</p>
+    <p>Please note that this link will expire in <b>5 mins </b>for your security.</p>
     <p>If you did not request a password reset, no further action is required. However, we recommend reviewing your account activity and ensuring your information is secure. Contact us immediately at <a href="mailto:${process.env.MAIL_ID}" rel="noopener noreferrer"> ${process.env.MAIL_ID}</a> or <a href="tel:919313052842" rel="noopener noreferrer">+91 9313052842</a> if you notice any suspicious activity.</p>
     <p>For best practices, please choose a strong password containing a mix of uppercase letters, lowercase letters, numbers, and special characters.</p>
     <p>We are here to assist you if you encounter any issues during the process.</p>
