@@ -205,3 +205,4 @@ export const totalRequests = asyncHandler(async (req, res) => {
         totalRequests,
     });
 })
+

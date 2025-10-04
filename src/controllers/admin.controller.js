@@ -923,6 +923,17 @@ const getAnalytics = asyncHandler(async (req, res) => {
     });
 })
 
+
+const deleteRequest = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const request = await Request.findByIdAndDelete(id);
+    if (!request) {
+        return res.status(404).json({ message: "Request not found" });
+    }
+    res.status(200).json({ message: "Request deleted successfully" });
+})
+
+
 export {
     getAllUsers,
     getAllProducts,
@@ -949,4 +960,5 @@ export {
     filterBuyByStatus,
     searchBuy,
     getAnalytics,
+    deleteRequest,
 }

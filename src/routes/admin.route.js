@@ -29,6 +29,7 @@ import {
     filterBuyByStatus,
     getBuy,
     getAnalytics,
+    deleteRequest,
 } from "../controllers/admin.controller.js";
 
 import { updateSettings, getUsdInrRate } from "../controllers/settings.controller.js";
@@ -59,6 +60,7 @@ router.get("/request/users", authMiddleware, adminMiddleware, getRequestUsers);
 router.put("/request/:requestId/assign/:userId", authMiddleware, adminMiddleware, assignSeller);
 router.put("/request/:id/update", authMiddleware, adminMiddleware, updateRequest);
 router.get("/request/:id", authMiddleware, adminMiddleware, getRequest);
+router.delete("/request/:id", authMiddleware, adminMiddleware, deleteRequest);
 
 // Order Routes
 router.get("/orders", authMiddleware, adminMiddleware, getBuy);
